@@ -9,21 +9,36 @@ DB_PATH = os.path.join(BASE_DIR, "gestion_production.db")
 KANBAN_PATH = os.path.join(BASE_DIR, "Classeur Kanban VKF CW 12.xlsm")
 PDB_PATH = os.path.join(BASE_DIR, "LAS_PDB .xlsm")
 # --------------------------------
+
 def init_db():
-    #1.connexion
+    # 1. connexion
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
 
-
-    # 2. Reset Tables
-    cursor.execute("DROP TABLE IF EXISTS Produits")
-    cursor.execute("DROP TABLE IF EXISTS Stock")
-    cursor.execute("DROP TABLE IF EXISTS Demandes")
-    cursor.execute("DROP TABLE IF EXISTS Pannes") # Supprimer pour mettre à jour la structure
-
-    # 3. Création des tables
+    # 2. Reset Tables (optionnel - commenté pour ne pas perdre les données)
+    # cursor.execute("DROP TABLE IF EXISTS Produits")
+    # cursor.execute("DROP TABLE IF EXISTS Stock")
+    # cursor.execute("DROP TABLE IF EXISTS Demandes")
+    # cursor.execute("DROP TABLE IF EXISTS Pannes")
+    
+    # 2.1 Nouvelle table EtatMachine (pour les compteurs automatiques)
     cursor.execute("""
-    CREATE TABLE Pannes (
+    CREATE TABLE IF NOT EXISTS EtatMachine (
+        shift TEXT PRIMARY KEY,
+        demande_id INTEGER,
+        compteur_actuel INTEGER DEFAULT 0,
+        machine_disponible INTEGER DEFAULT 1,
+        last_update TEXT
+    )
+    """)
+    
+    # Initialiser les shifts A et B s'ils n'existent pas
+    for s in ['A', 'B']:
+        cursor.execute("INSERT OR IGNORE INTO EtatMachine (shift, compteur_actuel, machine_disponible) VALUES (?, 0, 1)", (s,))
+
+    # 3. Création des autres tables (si elles n'existent pas)
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS Pannes (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         operateur_id TEXT,
         machine_id TEXT,
@@ -35,7 +50,7 @@ def init_db():
     """)
 
     cursor.execute("""
-    CREATE TABLE Produits (
+    CREATE TABLE IF NOT EXISTS Produits (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         reference TEXT UNIQUE,
         famille TEXT,
@@ -46,7 +61,13 @@ def init_db():
     )
     """)
 
-    cursor.execute("CREATE TABLE Stock (reference TEXT PRIMARY KEY, famille TEXT, quantite INTEGER DEFAULT 0)")
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS Stock (
+        reference TEXT PRIMARY KEY, 
+        famille TEXT, 
+        quantite INTEGER DEFAULT 0
+    )
+    """)
     
     cursor.execute("""
     CREATE TABLE IF NOT EXISTS Demandes (
@@ -82,41 +103,29 @@ def init_db():
         print(f"❌ Erreur Dispatching: {e}")
 
     # 5. Import BESOIN
-    # --- 4. Import BESOIN ---
     try:
         wb = openpyxl.load_workbook(KANBAN_PATH, data_only=True)
         if "BESOIN" in wb.sheetnames:
             sheet = wb["BESOIN"]
             count_log = 0
-
-        # Parcours des lignes 2 à 500 (ajuste si plus de lignes)
             for row_idx in range(2, 501):
-                for col_idx in range(1, 2):  # A=Fiat
+                for col_idx in range(1, 2):
                     cell_value = sheet.cell(row=row_idx, column=col_idx).value
                     if cell_value is not None:
                         val_ref = str(cell_value).strip()
-
-                    # Ignorer les entêtes / valeurs inutiles
                         if val_ref.lower() not in ['nan','none','','fiat pn','ref cab','ref','pn']:
-                        
-                        # Vérifie si la référence existe déjà
                             cursor.execute("SELECT reference FROM Produits WHERE reference=?", (val_ref,))
                             exists = cursor.fetchone()
-
                             if not exists:
-                            # Ajouter seulement la référence, module/famille restent par défaut
                                 cursor.execute("""
                                     INSERT INTO Produits (reference, famille, module)
                                     VALUES (?, 'Reference_Cable', 'LOGISTIQUE')
                                 """, (val_ref,))
-                            
                                 cursor.execute("""
                                     INSERT INTO Stock (reference, famille, quantite)
                                     VALUES (?, 'Reference_Cable', 0)
                                 """, (val_ref,))
-                            
                                 count_log += 1
-
             print(f"✅ Logistique OK : {count_log} références lues dans Fiat.")
         else:
             print("❌ Onglet 'BESOIN' introuvable.")
