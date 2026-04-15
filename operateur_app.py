@@ -1,58 +1,52 @@
-"""
-operateur_app.py - Interface Opérateur (Mode Automatique)
-==========================================================
-Ce fichier remplace l'ancienne version avec boutons manuels.
-Les fonctionnalités :
-- Plus de boutons "Lancer production" ni "Terminer"
-- Affichage automatique de l'état de la machine et du compteur
-- Le bouton "Lancer" devient visuellement "Démarré automatiquement" quand la prod est lancée
-- Connexion à l'API pour lire l'état en temps réel
-"""
-
 import streamlit as st
 import sqlite3
 import pandas as pd
 import os
-import requests
 from streamlit_autorefresh import st_autorefresh
 from datetime import datetime
+import requests  # ← إضافة جديدة للاتصال بـ API
 
 # ==================== CONFIGURATION ====================
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DB_PATH = os.path.join(BASE_DIR, "gestion_production.db")
+API_URL = "http://localhost:8501"  # نفس الـ API
 
-# ⚠️ IMPORTANT: L'IP sera détectée automatiquement par ESP32
-# Pour l'affichage dans Streamlit, on utilise localhost car le navigateur est sur le même PC
-API_URL = "http://localhost:8501"
+st.set_page_config(page_title="Poste Soudure Ultrasons")
 
-st.set_page_config(page_title="Poste Soudure Ultrasons - Mode Auto")
-st_autorefresh(interval=2000, key="auto_refresh")  # Rafraîchir toutes les 2 secondes
+# Auto-refresh
+st_autorefresh(interval=5000, key="main_refresh")
 
-# ==================== INIT SESSION ====================
+# Initialisation de session
 if 'task_counter' not in st.session_state:
     st.session_state.task_counter = 0
 
+# ==================== VÉRIFIER SI ESP32 EST CONNECTÉ ====================
+def is_esp32_connected():
+    """Vérifie si l'ESP32 est connecté en testant l'API"""
+    try:
+        response = requests.get(f"{API_URL}/api/health", timeout=1)
+        return response.status_code == 200
+    except:
+        return False
+
+esp32_connected = is_esp32_connected()
+
+# Fonction pour générer des clés uniques
 def generate_unique_key(base_name):
     st.session_state.task_counter += 1
     return f"{base_name}_{st.session_state.task_counter}"
 
-# ==================== SIDEBAR ====================
+# Sidebar - Identification
 with st.sidebar:
-    st.title("👤 Identification")
+    st.title("Identification")
     id_op_saisie = st.text_input("ID Opérateur (Saisie)", key="operateur_id")
     shift = st.radio("Shift", ["A", "B"], key="shift_selection", horizontal=True)
     
-    # Afficher l'état de la connexion à l'API
-    try:
-        response = requests.get(f"{API_URL}/api/etat", params={"shift": shift}, timeout=1)
-        if response.status_code == 200:
-            st.success("✅ Connecté au serveur")
-        else:
-            st.warning("⚠️ Serveur API lent")
-    except:
-        st.error("❌ Serveur API inaccessible")
-    
-    st.markdown("---")
+    # Afficher l'état de connexion de l'ESP32
+    if esp32_connected:
+        st.success("✅ Mode Automatique (ESP32 connecté)")
+    else:
+        st.warning("⚠️ Mode Manuel (ESP32 déconnecté)")
     
     # Signalement de panne
     st.subheader("⚠️ Signalement Panne")
@@ -68,7 +62,7 @@ with st.sidebar:
                         VALUES (?, ?, datetime('now'), '🔴 Ouvert')
                     """, (id_op_saisie, cause))
                     conn.commit()
-                    st.error("🚨 Panne signalée au superviseur !")
+                    st.error("Panne signalée au superviseur !")
                 except Exception as e:
                     st.error(f"Erreur: {str(e)}")
                 finally:
@@ -76,9 +70,8 @@ with st.sidebar:
             else:
                 st.warning("Saisir ID opérateur + cause")
 
-    # Historique des tâches terminées
-    st.markdown("---")
-    with st.expander("📜 Historique"):
+    # Historique
+    with st.expander("Historique"):
         try:
             conn = sqlite3.connect(DB_PATH)
             query = """
@@ -121,173 +114,114 @@ with st.sidebar:
         finally:
             conn.close()
 
-# ==================== INTERFACE PRINCIPALE ====================
-st.title(f"🔧 Poste Soudure Ultrasons - Shift {shift}")
-st.markdown("### Mode Automatique (Contrôle par pédale)")
+# Interface principale
+st.title(f"Poste Soudure Ultrasons - Shift {shift}")
 
-# ==================== AFFICHAGE ÉTAT MACHINE ====================
+# ==================== AFFICHAGE DU COMPTEUR (optionnel) ====================
+# Juste pour que l'opérateur voit l'avancement
 try:
-    response = requests.get(f"{API_URL}/api/etat", params={"shift": shift}, timeout=2)
-    
+    response = requests.get(f"{API_URL}/api/etat", params={"shift": shift}, timeout=1)
     if response.status_code == 200:
         etat = response.json()
-        demande_id = etat.get("demande_id")
-        quantite_requise = etat.get("quantite_requise", 0)
-        compteur_actuel = etat.get("compteur_actuel", 0)
-        machine_disponible = etat.get("machine_disponible", True)
-        
-        # ========== AFFICHAGE DU COMPTEUR ==========
-        col1, col2, col3 = st.columns([2, 1, 1])
-        
-        with col1:
-            if quantite_requise > 0:
-                st.metric("📊 Production en cours", f"{compteur_actuel} / {quantite_requise}")
-                # Barre de progression
-                st.progress(compteur_actuel / quantite_requise)
-            else:
-                st.metric("📊 Production en cours", "Aucune demande")
-        
-        # ========== AFFICHAGE DES LEDS VIRTUELLES ==========
-        with col2:
-            if machine_disponible:
-                st.success("🟢 Machine disponible")
-            else:
-                st.warning("🔴 Production en cours")
-        
-        with col3:
-            if quantite_requise > 0 and not machine_disponible:
-                st.info("🟡 En cours...")
-            elif quantite_requise > 0 and machine_disponible:
-                st.info("🟠 En attente")
-        
-        # ========== BOUTON "LANCER" AUTOMATIQUE (visuel seulement) ==========
-        st.markdown("---")
-        st.subheader("🎮 Contrôle production")
-        
-        col_btn1, col_btn2, col_btn3 = st.columns(3)
-        
-        with col_btn1:
-            # Ce bouton n'est plus cliquable pour lancer - il montre juste l'état
-            if not machine_disponible and quantite_requise > 0:
-                # Production en cours - bouton vert avec coche
-                st.success("✅ Production lancée automatiquement")
-            elif machine_disponible and quantite_requise > 0:
-                # Demande en attente - bouton orange
-                st.warning("⏳ En attente (appuyez sur pédale)")
-            else:
-                # Pas de demande
-                st.info(" Aucune demande")
-        
-        with col_btn2:
-            # Affichage de la référence en cours
-            if demande_id:
-                try:
-                    conn = sqlite3.connect(DB_PATH)
-                    ref_cursor = conn.execute("""
-                        SELECT p.module, p.reference 
-                        FROM Demandes d 
-                        JOIN Produits p ON d.reference = p.reference 
-                        WHERE d.id = ?
-                    """, (demande_id,))
-                    ref_info = ref_cursor.fetchone()
-                    if ref_info:
-                        st.metric(" Référence", ref_info[0])
-                    conn.close()
-                except:
-                    pass
-        
-        with col_btn3:
-            # Bouton d'annulation (manuel) - toujours présent
-            if st.button("Annuler dernière pièce", key="cancel_btn", use_container_width=True):
-                try:
-                    cancel_response = requests.post(
-                        f"{API_URL}/api/decrement",
-                        json={"shift": shift},
-                        timeout=2
-                    )
-                    if cancel_response.status_code == 200:
-                        st.success("✅ Annulation envoyée")
-                        st.rerun()
-                    else:
-                        st.error("❌ Erreur annulation")
-                except Exception as e:
-                    st.error(f"Erreur: {str(e)}")
-        
-        # ========== AFFICHAGE DES PARAMÈTRES DE SOUDURE ==========
-        if demande_id:
-            try:
-                conn = sqlite3.connect(DB_PATH)
-                params = conn.execute("""
-                    SELECT p.pression, p.temps, p.amplitude
-                    FROM Demandes d
-                    JOIN Produits p ON d.reference = p.reference
-                    WHERE d.id = ?
-                """, (demande_id,)).fetchone()
-                
-                if params:
-                    st.markdown("---")
-                    st.subheader(" Paramètres soudure")
-                    col_p1, col_p2, col_p3 = st.columns(3)
-                    with col_p1:
-                        st.metric("Pression", f"{params[0] if params[0] else '~'} bar")
-                    with col_p2:
-                        st.metric("Temps", f"{params[1] if params[1] else '~'} s")
-                    with col_p3:
-                        st.metric("Amplitude", f"{params[2] if params[2] else '~'} %")
-                conn.close()
-            except:
-                pass
-                
-    else:
-        st.error(f"Erreur API: Code {response.status_code}")
-        
-except requests.exceptions.ConnectionError:
-    st.error("❌ Impossible de se connecter à l'API. Vérifiez que le serveur est lancé.")
-except Exception as e:
-    st.error(f"Erreur: {str(e)}")
-
-# ==================== LISTE DES DEMANDES (Lecture seule) ====================
-st.markdown("---")
-st.subheader(" Liste des demandes en attente")
+        qte = etat.get("quantite_requise", 0)
+        compteur = etat.get("compteur_actuel", 0)
+        if qte > 0:
+            st.info(f"📊 Avancement: {compteur} / {qte} pièces produites")
+except:
+    pass
 
 try:
     conn = sqlite3.connect(DB_PATH)
     query = """
     SELECT 
+        d.id,
+        p.famille,
         p.module,
         d.quantite,
         d.statut,
-        d.id,
-        d.urgence
+        p.pression,
+        IFNULL(p.temps,0),
+        IFNULL(p.amplitude,0),
+        d.date_besoin
     FROM Demandes d
     JOIN Produits p ON d.reference = p.reference
     WHERE d.shift = ?
-    AND d.statut != 'Terminé'
-    AND d.statut != 'Archivé'
-    ORDER BY 
-        CASE WHEN d.statut = '🟢En cours' THEN 1 ELSE 2 END,
-        CASE d.urgence WHEN 'Critique' THEN 1 WHEN 'Urgent' THEN 2 ELSE 3 END,
-        d.id ASC
+    AND d.statut NOT IN ('Terminé','Archivé')
+    ORDER BY d.date_besoin ASC
     """
     tasks = conn.execute(query, (shift,)).fetchall()
-    
+
     if tasks:
-        for mod, qte, statut, id_d, urgence in tasks:
-            # Choisir la couleur selon le statut
-            if statut == '🟢En cours':
-                status_color = "🟢"
-            elif statut == '🟠En attente':
-                status_color = "🟠"
-            else:
-                status_color = "⚪"
+        for task in tasks:
+            id_d, fam, mod, qte, stat, press, temps, amp, date_b = task
             
-            # Afficher chaque demande
-            st.markdown(f"{status_color} **{mod}** | Qté: {qte} | Urgence: {urgence} | {statut}")
-    else:
-        st.success("✅ Aucune demande en attente")
-        
+            with st.expander(f"{mod} | {fam} | Qté {qte} (ID: {id_d})"):
+                cols = st.columns([1, 1, 2])
+                
+                with cols[0]:
+                    # ==================== BOUTON LANCER MODIFIÉ ====================
+                    if esp32_connected:
+                        # Mode automatique: le bouton est désactivé (visible mais non fonctionnel)
+                        st.button(
+                            "Lancer production", 
+                            key=f"start_prod_{id_d}_{shift}",
+                            disabled=True,
+                            help="Mode automatique: la pédale ESP32 lance la production"
+                        )
+                    else:
+                        # Mode manuel: le bouton fonctionne normalement
+                        if st.button(
+                            "Lancer production", 
+                            key=f"start_prod_{id_d}_{shift}",
+                            help=f"Démarrer la production de {mod}"
+                        ):
+                            conn.execute("""
+                                UPDATE Demandes
+                                SET statut = '🟢En cours',
+                                    debut_production = datetime('now'),
+                                    operateur_id = ?
+                                WHERE id = ?
+                            """, (id_op_saisie, id_d))
+                            conn.commit()
+                            st.rerun()
+                
+                with cols[1]:
+                    # ==================== BOUTON TERMINER MODIFIÉ ====================
+                    if esp32_connected:
+                        # Mode automatique: le bouton est désactivé
+                        st.button(
+                            "Terminer", 
+                            key=f"end_{id_d}",
+                            disabled=True,
+                            help="Mode automatique: se termine automatiquement"
+                        )
+                    else:
+                        # Mode manuel: le bouton fonctionne normalement
+                        if st.button("Terminer", key=f"end_{id_d}"):
+                            qte_a_ajouter = qte
+                            conn.execute("""
+                                UPDATE Stock 
+                                SET quantite = quantite + ? 
+                                WHERE reference = (SELECT reference FROM Demandes WHERE id=?)
+                            """, (qte_a_ajouter, id_d))
+                            conn.execute("""
+                                UPDATE Demandes 
+                                SET statut='Terminé', fin_production=datetime('now') 
+                                WHERE id=?
+                            """, (id_d,))
+                            conn.commit()
+                            st.rerun()
+                
+                with cols[2]:
+                    st.write(f"**Statut:** {stat}")
+                    st.markdown("""
+                    **Paramètres soudure automatiques:**
+                    - **Pression:** {} bar
+                    - **Temps:** {} s
+                    - **Amplitude:** {} %
+                    """.format(press if press else '~', temps if temps else '~', amp if amp else '~'))
+       
 except Exception as e:
-    st.error(f"Erreur chargement demandes: {e}")
+    st.error(f"Erreur lors de la récupération des tâches: {str(e)}")
 finally:
     conn.close()
-
