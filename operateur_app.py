@@ -4,13 +4,10 @@ import pandas as pd
 import os
 from streamlit_autorefresh import st_autorefresh
 from datetime import datetime
-import requests  # ← إضافة جديدة للاتصال بـ API
 
-# ==================== CONFIGURATION ====================
+# Configuration de base
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DB_PATH = os.path.join(BASE_DIR, "gestion_production.db")
-API_URL = "http://localhost:8501"  # نفس الـ API
-
 st.set_page_config(page_title="Poste Soudure Ultrasons")
 
 # Auto-refresh
@@ -19,17 +16,6 @@ st_autorefresh(interval=5000, key="main_refresh")
 # Initialisation de session
 if 'task_counter' not in st.session_state:
     st.session_state.task_counter = 0
-
-# ==================== VÉRIFIER SI ESP32 EST CONNECTÉ ====================
-def is_esp32_connected():
-    """Vérifie si l'ESP32 est connecté en testant l'API"""
-    try:
-        response = requests.get(f"{API_URL}/api/health", timeout=1)
-        return response.status_code == 200
-    except:
-        return False
-
-esp32_connected = is_esp32_connected()
 
 # Fonction pour générer des clés uniques
 def generate_unique_key(base_name):
@@ -41,12 +27,6 @@ with st.sidebar:
     st.title("Identification")
     id_op_saisie = st.text_input("ID Opérateur (Saisie)", key="operateur_id")
     shift = st.radio("Shift", ["A", "B"], key="shift_selection", horizontal=True)
-    
-    # Afficher l'état de connexion de l'ESP32
-    if esp32_connected:
-        st.success("✅ Mode Automatique (ESP32 connecté)")
-    else:
-        st.warning("⚠️ Mode Manuel (ESP32 déconnecté)")
     
     # Signalement de panne
     st.subheader("⚠️ Signalement Panne")
@@ -117,19 +97,6 @@ with st.sidebar:
 # Interface principale
 st.title(f"Poste Soudure Ultrasons - Shift {shift}")
 
-# ==================== AFFICHAGE DU COMPTEUR (optionnel) ====================
-# Juste pour que l'opérateur voit l'avancement
-try:
-    response = requests.get(f"{API_URL}/api/etat", params={"shift": shift}, timeout=1)
-    if response.status_code == 200:
-        etat = response.json()
-        qte = etat.get("quantite_requise", 0)
-        compteur = etat.get("compteur_actuel", 0)
-        if qte > 0:
-            st.info(f"📊 Avancement: {compteur} / {qte} pièces produites")
-except:
-    pass
-
 try:
     conn = sqlite3.connect(DB_PATH)
     query = """
@@ -159,19 +126,19 @@ try:
                 cols = st.columns([1, 1, 2])
                 
                 with cols[0]:
-                    # ==================== BOUTON LANCER MODIFIÉ ====================
-                    if esp32_connected:
-                        # Mode automatique: le bouton est désactivé (visible mais non fonctionnel)
+                    # ========== BOUTON LANCER PRODUCTION MODIFIÉ ==========
+                    # Si la production est déjà en cours, on affiche un bouton vert désactivé
+                    if stat == '🟢En cours':
                         st.button(
-                            "Lancer production", 
+                            "✅ Production en cours (Auto)", 
                             key=f"start_prod_{id_d}_{shift}",
                             disabled=True,
-                            help="Mode automatique: la pédale ESP32 lance la production"
+                            help="Production lancée automatiquement par l'ESP32"
                         )
                     else:
-                        # Mode manuel: le bouton fonctionne normalement
+                        # Sinon, bouton actif normal (l'opérateur peut lancer manuellement)
                         if st.button(
-                            "Lancer production", 
+                            "🚀 Lancer production", 
                             key=f"start_prod_{id_d}_{shift}",
                             help=f"Démarrer la production de {mod}"
                         ):
@@ -186,31 +153,24 @@ try:
                             st.rerun()
                 
                 with cols[1]:
-                    # ==================== BOUTON TERMINER MODIFIÉ ====================
-                    if esp32_connected:
-                        # Mode automatique: le bouton est désactivé
-                        st.button(
-                            "Terminer", 
-                            key=f"end_{id_d}",
-                            disabled=True,
-                            help="Mode automatique: se termine automatiquement"
-                        )
-                    else:
-                        # Mode manuel: le bouton fonctionne normalement
-                        if st.button("Terminer", key=f"end_{id_d}"):
-                            qte_a_ajouter = qte
-                            conn.execute("""
-                                UPDATE Stock 
-                                SET quantite = quantite + ? 
-                                WHERE reference = (SELECT reference FROM Demandes WHERE id=?)
-                            """, (qte_a_ajouter, id_d))
-                            conn.execute("""
-                                UPDATE Demandes 
-                                SET statut='Terminé', fin_production=datetime('now') 
-                                WHERE id=?
-                            """, (id_d,))
-                            conn.commit()
-                            st.rerun()
+                    # ========== BOUTON TERMINER (toujours actif) ==========
+                    # L'opérateur peut terminer manuellement même si c'est auto
+                    if st.button("🏁 Terminer", key=f"end_{id_d}"):
+                        qte_a_ajouter = qte
+                        # Update Stock
+                        conn.execute("""
+                            UPDATE Stock 
+                            SET quantite = quantite + ? 
+                            WHERE reference = (SELECT reference FROM Demandes WHERE id=?)
+                        """, (qte_a_ajouter, id_d))
+                        # Update Statut Demande
+                        conn.execute("""
+                            UPDATE Demandes 
+                            SET statut='Terminé', fin_production=datetime('now') 
+                            WHERE id=?
+                        """, (id_d,))
+                        conn.commit()
+                        st.rerun()
                 
                 with cols[2]:
                     st.write(f"**Statut:** {stat}")
