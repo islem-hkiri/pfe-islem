@@ -15,19 +15,14 @@
 
 #include <WiFi.h>
 #include <HTTPClient.h>
-#include <WiFiUDP.h>
 
 // ==================== WiFi Configuration ====================
 const char* ssid = "BEE HUAWEI-1CB0";        // ⚠️ Modifier
 const char* password = "485754439C621CB0";     // ⚠️ Modifier
 
-// ==================== UDP Discovery ====================
-WiFiUDP udp;
-const int UDP_PORT = 12345;
-IPAddress serverIP;
-bool serverFound = false;
-unsigned long lastDiscovery = 0;
-const unsigned long DISCOVERY_INTERVAL = 30000;
+// ==================== Serveur fixe (plus de UDP) ====================
+IPAddress serverIP(192, 168, 100, 5);        // ⚠️ Mettez l'IP de votre serveur ici
+const int SERVER_PORT = 8502;                 // Port du serveur Streamlit
 
 // ==================== Pins ====================
 const int PIN_LIMIT_SWITCH = 13;
@@ -42,8 +37,6 @@ unsigned long lastDebounceTime = 0;
 const unsigned long debounceDelay = 50;
 bool lastLimitState = HIGH;
 bool lastCancelState = HIGH;
-unsigned long lastBlinkTime = 0;
-bool blinkState = false;
 unsigned long lastLEDUpdate = 0;
 const unsigned long LED_UPDATE_INTERVAL = 1000;
 
@@ -54,14 +47,12 @@ void setup() {
   Serial.println("║   ESP32 - Poste Soudure Ultrasons  ║");
   Serial.println("╚════════════════════════════════════╝\n");
   
-  // Configuration des pins
   pinMode(PIN_LIMIT_SWITCH, INPUT_PULLUP);
   pinMode(PIN_CANCEL_BUTTON, INPUT_PULLUP);
   pinMode(PIN_LED_ROUGE, OUTPUT);
   pinMode(PIN_LED_ORANGE, OUTPUT);
   pinMode(PIN_LED_VERTE, OUTPUT);
   
-  // Éteindre toutes les LEDs
   digitalWrite(PIN_LED_ROUGE, LOW);
   digitalWrite(PIN_LED_ORANGE, LOW);
   digitalWrite(PIN_LED_VERTE, LOW);
@@ -86,70 +77,14 @@ void setup() {
     Serial.println("\n❌ Échec de connexion WiFi");
   }
   
-  // Démarrer UDP
-  udp.begin(UDP_PORT);
-  Serial.print("📡 UDP démarré sur port: ");
-  Serial.println(UDP_PORT);
-  
-  // Découverte du serveur
-  discoverServer();
-}
-
-// ==================== UDP Discovery ====================
-void discoverServer() {
-  Serial.println("🔍 Recherche du serveur Streamlit...");
-  
-  IPAddress broadcastIp = ~WiFi.subnetMask() | WiFi.gatewayIP();
-  Serial.print("📡 Broadcast IP: ");
-  Serial.println(broadcastIp);
-  
-  // Envoyer requête UDP
-  udp.beginPacket(broadcastIp, UDP_PORT);
-  const char* message = "WHO_IS_STREAMLIT_SERVER";
-  udp.write((const uint8_t*)message, strlen(message));
-  udp.endPacket();
-  
-  // Attendre réponse (3 secondes)
-  unsigned long startTime = millis();
-  while (millis() - startTime < 3000) {
-    int packetSize = udp.parsePacket();
-    if (packetSize) {
-      char buffer[255];
-      int len = udp.read(buffer, 255);
-      if (len > 0) {
-        buffer[len] = '\0';
-        if (strcmp(buffer, "STREAMLIT_SERVER_HERE") == 0) {
-          serverIP = udp.remoteIP();
-          serverFound = true;
-          Serial.print("✅ Serveur trouvé ! IP: ");
-          Serial.println(serverIP);
-          
-          // Clignotement LED verte pour confirmer
-          for (int i = 0; i < 3; i++) {
-            digitalWrite(PIN_LED_VERTE, HIGH);
-            delay(200);
-            digitalWrite(PIN_LED_VERTE, LOW);
-            delay(200);
-          }
-          return;
-        }
-      }
-    }
-  }
-  
-  Serial.println("❌ Serveur non trouvé (réessai dans 30s)");
-  serverFound = false;
+  Serial.print("🌐 Serveur configuré à: ");
+  Serial.println(serverIP);
 }
 
 // ==================== Incrémentation ====================
 void incrementerProduction() {
-  if (!serverFound) {
-    Serial.println("⚠️ Pas de serveur - incrément ignoré");
-    return;
-  }
-  
   HTTPClient http;
-  String url = "http://" + serverIP.toString() + ":8502/api/increment";
+  String url = "http://" + serverIP.toString() + ":" + String(SERVER_PORT) + "/api/increment";
   http.begin(url);
   http.addHeader("Content-Type", "application/json");
   
@@ -176,13 +111,8 @@ void incrementerProduction() {
 
 // ==================== Décrémentation ====================
 void decrementerProduction() {
-  if (!serverFound) {
-    Serial.println("⚠️ Pas de serveur - décrément ignoré");
-    return;
-  }
-  
   HTTPClient http;
-  String url = "http://" + serverIP.toString() + ":8502/api/decrement";
+  String url = "http://" + serverIP.toString() + ":" + String(SERVER_PORT) + "/api/decrement";
   http.begin(url);
   http.addHeader("Content-Type", "application/json");
   
@@ -203,22 +133,10 @@ void decrementerProduction() {
   http.end();
 }
 
-// ==================== Mise à jour des LEDs ====================
+// ==================== Mise à jour des LEDs (sans UDP) ====================
 void mettreAJourLEDs() {
-  if (!serverFound) {
-    // LED orange clignotante = recherche serveur
-    if (millis() - lastBlinkTime > 500) {
-      blinkState = !blinkState;
-      digitalWrite(PIN_LED_ORANGE, blinkState);
-      digitalWrite(PIN_LED_VERTE, LOW);
-      digitalWrite(PIN_LED_ROUGE, LOW);
-      lastBlinkTime = millis();
-    }
-    return;
-  }
-  
   HTTPClient http;
-  String url = "http://" + serverIP.toString() + ":8502/api/etat?shift=" + currentShift;
+  String url = "http://" + serverIP.toString() + ":" + String(SERVER_PORT) + "/api/etat?shift=" + currentShift;
   http.begin(url);
   
   int httpCode = http.GET();
@@ -244,6 +162,10 @@ void mettreAJourLEDs() {
   } else {
     Serial.print("❌ Erreur GET /api/etat: ");
     Serial.println(httpCode);
+    // Si erreur, on éteint tout sauf rouge clignotant ? (optionnel)
+    digitalWrite(PIN_LED_VERTE, LOW);
+    digitalWrite(PIN_LED_ORANGE, LOW);
+    digitalWrite(PIN_LED_ROUGE, HIGH);
   }
   
   http.end();
@@ -251,20 +173,15 @@ void mettreAJourLEDs() {
 
 // ==================== Loop Principal ====================
 void loop() {
-  // Lecture des entrées
   bool limitState = digitalRead(PIN_LIMIT_SWITCH);
   bool cancelState = digitalRead(PIN_CANCEL_BUTTON);
   
-  // Debounce et détection des appuis
   if ((millis() - lastDebounceTime) > debounceDelay) {
-    
-    // Pédale appuyée (HIGH -> LOW)
     if (lastLimitState == HIGH && limitState == LOW) {
       Serial.println("\n🔘 [ACTION] Pédale appuyée");
       incrementerProduction();
     }
     
-    // Bouton annulation appuyé (HIGH -> LOW)
     if (lastCancelState == HIGH && cancelState == LOW) {
       Serial.println("\n🔘 [ACTION] Annulation appuyée");
       decrementerProduction();
@@ -275,12 +192,6 @@ void loop() {
   
   lastLimitState = limitState;
   lastCancelState = cancelState;
-  
-  // Découverte périodique du serveur
-  if (millis() - lastDiscovery > DISCOVERY_INTERVAL) {
-    discoverServer();
-    lastDiscovery = millis();
-  }
   
   // Mise à jour périodique des LEDs
   if (millis() - lastLEDUpdate > LED_UPDATE_INTERVAL) {
