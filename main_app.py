@@ -1,15 +1,8 @@
 import streamlit as st
-import threading
 
-# Importer et démarrer le serveur UDP
-from udp_server import start_udp_server
-start_udp_server()
+# ========== PLUS DE LANCEMENT AUTOMATIQUE DE L'API ==========
+# Tu lanceras api_endpoints.py dans un terminal séparé.
 
-# Importer et démarrer l'API (sans uvicorn)
-from api_endpoints import run_api
-threading.Thread(target=run_api, daemon=True).start()
-
-# ========== LE RESTE DE TON CODE ORIGINAL ==========
 if "role" not in st.session_state:
     st.session_state.role = None
 
@@ -26,7 +19,7 @@ def login():
             st.session_state.role = "Opérateur"
             st.rerun()
         else:
-            st.error("mot de passe incorrecte")
+            st.error("Mot de passe incorrect")
 
 if st.session_state.role is None:
     login()
@@ -38,7 +31,6 @@ else:
     if st.session_state.role == "Logistique":
         st.sidebar.success("Connecté : Logistique")
         exec(open("logistique_app.py").read())
-        
     elif st.session_state.role == "Opérateur":
         st.sidebar.info("Connecté : Opérateur")
         exec(open("operateur_app.py").read())
